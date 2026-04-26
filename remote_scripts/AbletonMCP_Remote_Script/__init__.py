@@ -226,11 +226,13 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
             # Commands that modify Live's state should be scheduled on the main thread
-            elif command_type in ["create_midi_track", "set_track_name", 
-                                 "create_clip", "add_notes_to_clip", "set_clip_name", 
+            elif command_type in ["create_midi_track", "set_track_name",
+                                 "create_clip", "add_notes_to_clip", "set_clip_name",
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback", "load_browser_item",
-                                 "load_browser_item_to_slot"]:
+                                 "load_browser_item_to_slot",
+                                 "get_clip_notes", "create_arrangement_clip",
+                                 "add_notes_to_arrangement_clip", "build_arrangement"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -288,7 +290,24 @@ class AbletonMCP(ControlSurface):
                             clip_index = params.get("clip_index", 0)
                             item_uri = params.get("item_uri", "")
                             result = self._load_browser_item_to_slot(track_index, clip_index, item_uri)
-                        
+                        elif command_type == "get_clip_notes":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            result = self._get_clip_notes(track_index, clip_index)
+                        elif command_type == "create_arrangement_clip":
+                            track_index = params.get("track_index", 0)
+                            start_beat = params.get("start_beat", 0.0)
+                            length = params.get("length", 4.0)
+                            result = self._create_arrangement_clip(track_index, start_beat, length)
+                        elif command_type == "add_notes_to_arrangement_clip":
+                            track_index = params.get("track_index", 0)
+                            start_beat = params.get("start_beat", 0.0)
+                            notes = params.get("notes", [])
+                            result = self._add_notes_to_arrangement_clip(track_index, start_beat, notes)
+                        elif command_type == "build_arrangement":
+                            sections = params.get("sections", [])
+                            result = self._build_arrangement(sections)
+
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
                     except Exception as e:
@@ -799,6 +818,83 @@ class AbletonMCP(ControlSurface):
             self.log_message(traceback.format_exc())
             raise
     
+    def _get_clip_notes(self, track_index, clip_index):
+        """セッションクリップのMIDIノートを返す"""
+        track = self._song.tracks[track_index]
+        clip = track.clip_slots[clip_index].clip
+        notes = clip.get_notes(0, 0, clip.length, 128)
+        return {
+            "length": clip.length,
+            "notes": [
+                {
+                    "pitch": n[0],
+                    "start_time": n[1],
+                    "duration": n[2],
+                    "velocity": n[3],
+                    "mute": n[4],
+                }
+                for n in notes
+            ],
+        }
+
+    def _create_arrangement_clip(self, track_index, start_beat, length):
+        """Arrangement View にMIDIクリップを作成する"""
+        track = self._song.tracks[track_index]
+        clip = track.create_midi_clip(start_beat, length)
+        return {
+            "start_beat": start_beat,
+            "length": length,
+            "name": clip.name,
+        }
+
+    def _add_notes_to_arrangement_clip(self, track_index, start_beat, notes):
+        """Arrangement View の指定クリップにノートを追加する"""
+        track = self._song.tracks[track_index]
+        target_clip = None
+        for clip in track.arrangement_clips:
+            if abs(clip.start_time - start_beat) < 0.001:
+                target_clip = clip
+                break
+        if target_clip is None:
+            raise Exception("No arrangement clip at beat {0} on track {1}".format(start_beat, track_index))
+        live_notes = tuple(
+            (n["pitch"], n["start_time"], n["duration"], n["velocity"], n.get("mute", False))
+            for n in notes
+        )
+        target_clip.set_notes(live_notes)
+        return {"note_count": len(notes)}
+
+    def _build_arrangement(self, sections):
+        """セッションクリップのノートをArrangement Viewに展開する"""
+        results = []
+        for section in sections:
+            track_index = section["track_index"]
+            start_beat = section["start_beat"]
+            length = section["length"]
+            session_slot = section.get("session_slot", 0)
+
+            note_data = self._get_clip_notes(track_index, session_slot)
+            clip_length = note_data["length"]
+            notes = note_data["notes"]
+
+            self._create_arrangement_clip(track_index, start_beat, length)
+
+            expanded = []
+            beat = 0.0
+            while beat < length:
+                for n in notes:
+                    note_start = beat + n["start_time"]
+                    if note_start >= length:
+                        break
+                    note_duration = min(n["duration"], length - note_start)
+                    expanded.append({**n, "start_time": note_start, "duration": note_duration})
+                beat += clip_length
+
+            self._add_notes_to_arrangement_clip(track_index, start_beat, expanded)
+            results.append({"track_index": track_index, "start_beat": start_beat, "length": length})
+
+        return {"sections_built": len(results), "sections": results}
+
     def _find_browser_item_by_uri(self, browser_or_item, uri, max_depth=10, current_depth=0):
         """Find a browser item by its URI"""
         try:

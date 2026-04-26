@@ -380,6 +380,47 @@ def load_drum_kit(ctx: click.Context, track_index: int, rack_uri: str, kit_path:
     click.echo(f"Loaded drum rack + kit '{loadable[0].get('name')}' on track {track_index}")
 
 
+# ── Arrangement commands ─────────────────────────────────────────────
+
+@cli.group()
+def arrangement() -> None:
+    """Arrangement View operations."""
+    pass
+
+
+@arrangement.command("build")
+@click.pass_context
+def arrangement_build(ctx: click.Context) -> None:
+    """Build the Arrangement View from session clips using the house track layout.
+
+    Section layout (128 BPM, A minor house track):
+      Intro  : Drums only        (bars 1-8,   beats 0-32)
+      +Bass  : Drums + Bass      (bars 9-16,  beats 32-64)
+      +Pad   : + Synth Pad       (bars 17-24, beats 64-96)
+      Peak   : + Lead            (bars 25-40, beats 96-160)
+      Break  : Drums + Pad       (bars 41-48, beats 160-192)
+      Outro  : Drums only        (bars 49-56, beats 192-224)
+    """
+    conn = _get_conn(ctx)
+
+    sections = [
+        # Drums: 全区間 (0-224拍)
+        {"track_index": 0, "start_beat": 0,   "length": 224, "session_slot": 0},
+        # Bass: +Bass〜ピーク (32-160拍)
+        {"track_index": 1, "start_beat": 32,  "length": 128, "session_slot": 0},
+        # Synth Pad: +Pad〜ブレイク (64-192拍)
+        {"track_index": 2, "start_beat": 64,  "length": 128, "session_slot": 0},
+        # Lead: ピークのみ (96-160拍)
+        {"track_index": 3, "start_beat": 96,  "length": 64,  "session_slot": 0},
+    ]
+
+    click.echo("Building arrangement...")
+    result = conn.send_command("build_arrangement", {"sections": sections})
+    n = result.get("sections_built", 0)
+    click.echo(f"Arrangement built: {n} sections placed.")
+    click.echo("Switch to Arrangement View in Ableton and press Play.")
+
+
 # ── Entry point ─────────────────────────────────────────────────────
 
 if __name__ == "__main__":
