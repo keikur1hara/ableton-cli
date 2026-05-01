@@ -232,7 +232,11 @@ class AbletonMCP(ControlSurface):
                                  "start_playback", "stop_playback", "load_browser_item",
                                  "load_browser_item_to_slot",
                                  "get_clip_notes", "create_arrangement_clip",
-                                 "add_notes_to_arrangement_clip", "build_arrangement"]:
+                                 "add_notes_to_arrangement_clip", "build_arrangement",
+                                 "set_track_mute", "set_track_solo",
+                                 "set_track_volume", "set_track_pan",
+                                 "clear_arrangement", "play_from_beat",
+                                 "duplicate_clip", "fire_scene", "set_device_param"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -307,6 +311,41 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "build_arrangement":
                             sections = params.get("sections", [])
                             result = self._build_arrangement(sections)
+                        elif command_type == "set_track_mute":
+                            track_index = params.get("track_index", 0)
+                            mute = params.get("mute", True)
+                            result = self._set_track_mute(track_index, mute)
+                        elif command_type == "set_track_solo":
+                            track_index = params.get("track_index", 0)
+                            solo = params.get("solo", True)
+                            result = self._set_track_solo(track_index, solo)
+                        elif command_type == "set_track_volume":
+                            track_index = params.get("track_index", 0)
+                            volume = params.get("volume", 0.85)
+                            result = self._set_track_volume(track_index, volume)
+                        elif command_type == "set_track_pan":
+                            track_index = params.get("track_index", 0)
+                            pan = params.get("pan", 0.0)
+                            result = self._set_track_pan(track_index, pan)
+                        elif command_type == "clear_arrangement":
+                            result = self._clear_arrangement()
+                        elif command_type == "play_from_beat":
+                            beat = params.get("beat", 0.0)
+                            result = self._play_from_beat(beat)
+                        elif command_type == "duplicate_clip":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            dest_clip_index = params.get("dest_clip_index", 0)
+                            result = self._duplicate_clip(track_index, clip_index, dest_clip_index)
+                        elif command_type == "fire_scene":
+                            scene_index = params.get("scene_index", 0)
+                            result = self._fire_scene(scene_index)
+                        elif command_type == "set_device_param":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            param_name = params.get("param_name", "")
+                            value = params.get("value", 0.0)
+                            result = self._set_device_param(track_index, device_index, param_name, value)
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -894,6 +933,90 @@ class AbletonMCP(ControlSurface):
             results.append({"track_index": track_index, "start_beat": start_beat, "length": length})
 
         return {"sections_built": len(results), "sections": results}
+
+    def _set_track_mute(self, track_index, mute):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        track.mute = mute
+        return {"track_index": track_index, "mute": track.mute}
+
+    def _set_track_solo(self, track_index, solo):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        track.solo = solo
+        return {"track_index": track_index, "solo": track.solo}
+
+    def _set_track_volume(self, track_index, volume):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        track.mixer_device.volume.value = volume
+        return {"track_index": track_index, "volume": track.mixer_device.volume.value}
+
+    def _set_track_pan(self, track_index, pan):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        track.mixer_device.panning.value = pan
+        return {"track_index": track_index, "pan": track.mixer_device.panning.value}
+
+    def _clear_arrangement(self):
+        count = 0
+        for track in self._song.tracks:
+            for clip in list(track.arrangement_clips):
+                try:
+                    clip.delete_clip()
+                    count += 1
+                except Exception as e:
+                    self.log_message("Could not delete arrangement clip: " + str(e))
+        return {"deleted": count}
+
+    def _play_from_beat(self, beat):
+        self._song.current_song_time = beat
+        self._song.start_playing()
+        return {"playing": True, "from_beat": beat}
+
+    def _duplicate_clip(self, track_index, clip_index, dest_clip_index):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        src_slot = track.clip_slots[clip_index]
+        if not src_slot.has_clip:
+            raise Exception("No clip in source slot")
+        src_clip = src_slot.clip
+        notes_data = self._get_clip_notes(track_index, clip_index)
+        self._create_clip(track_index, dest_clip_index, src_clip.length)
+        if notes_data["notes"]:
+            self._add_notes_to_clip(track_index, dest_clip_index, notes_data["notes"])
+        dest_clip = track.clip_slots[dest_clip_index].clip
+        dest_clip.name = src_clip.name
+        return {"duplicated": True, "dest_clip_index": dest_clip_index, "name": dest_clip.name}
+
+    def _fire_scene(self, scene_index):
+        if scene_index < 0 or scene_index >= len(self._song.scenes):
+            raise IndexError("Scene index out of range")
+        self._song.scenes[scene_index].fire()
+        return {"fired": True, "scene_index": scene_index}
+
+    def _set_device_param(self, track_index, device_index, param_name, value):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        if device_index < 0 or device_index >= len(track.devices):
+            raise IndexError("Device index out of range")
+        device = track.devices[device_index]
+        target_param = None
+        for param in device.parameters:
+            if param.name.lower() == param_name.lower():
+                target_param = param
+                break
+        if target_param is None:
+            available = [p.name for p in device.parameters]
+            raise ValueError("Parameter '{0}' not found. Available: {1}".format(param_name, available))
+        target_param.value = value
+        return {"param_name": target_param.name, "value": target_param.value}
 
     def _find_browser_item_by_uri(self, browser_or_item, uri, max_depth=10, current_depth=0):
         """Find a browser item by its URI"""

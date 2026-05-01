@@ -123,6 +123,68 @@ def track_rename(ctx: click.Context, index: int, name: str) -> None:
     click.echo(f"Track renamed to: {result.get('name', name)}")
 
 
+@track.command("mute")
+@click.argument("index", type=int)
+@click.pass_context
+def track_mute(ctx: click.Context, index: int) -> None:
+    """Mute a track at INDEX."""
+    conn = _get_conn(ctx)
+    conn.send_command("set_track_mute", {"track_index": index, "mute": True})
+    click.echo(f"Track {index} muted")
+
+
+@track.command("unmute")
+@click.argument("index", type=int)
+@click.pass_context
+def track_unmute(ctx: click.Context, index: int) -> None:
+    """Unmute a track at INDEX."""
+    conn = _get_conn(ctx)
+    conn.send_command("set_track_mute", {"track_index": index, "mute": False})
+    click.echo(f"Track {index} unmuted")
+
+
+@track.command("solo")
+@click.argument("index", type=int)
+@click.pass_context
+def track_solo(ctx: click.Context, index: int) -> None:
+    """Solo a track at INDEX."""
+    conn = _get_conn(ctx)
+    conn.send_command("set_track_solo", {"track_index": index, "solo": True})
+    click.echo(f"Track {index} soloed")
+
+
+@track.command("unsolo")
+@click.argument("index", type=int)
+@click.pass_context
+def track_unsolo(ctx: click.Context, index: int) -> None:
+    """Unsolo a track at INDEX."""
+    conn = _get_conn(ctx)
+    conn.send_command("set_track_solo", {"track_index": index, "solo": False})
+    click.echo(f"Track {index} unsoloed")
+
+
+@track.command("volume")
+@click.argument("index", type=int)
+@click.argument("value", type=float)
+@click.pass_context
+def track_volume(ctx: click.Context, index: int, value: float) -> None:
+    """Set track volume (0.0–1.0; 0.85 ≈ 0 dB)."""
+    conn = _get_conn(ctx)
+    result = conn.send_command("set_track_volume", {"track_index": index, "volume": value})
+    click.echo(f"Track {index} volume set to {result.get('volume', value):.3f}")
+
+
+@track.command("pan")
+@click.argument("index", type=int)
+@click.argument("value", type=float)
+@click.pass_context
+def track_pan(ctx: click.Context, index: int, value: float) -> None:
+    """Set track panning (-1.0 = left, 0.0 = center, 1.0 = right)."""
+    conn = _get_conn(ctx)
+    result = conn.send_command("set_track_pan", {"track_index": index, "pan": value})
+    click.echo(f"Track {index} pan set to {result.get('pan', value):.3f}")
+
+
 # ── Clip commands ───────────────────────────────────────────────────
 
 @cli.group()
@@ -190,6 +252,33 @@ def clip_add_notes(ctx: click.Context, track_index: int, clip_index: int, notes_
         "notes": notes,
     })
     click.echo(f"Added {len(notes)} note(s) to track {track_index}, slot {clip_index}")
+
+
+@clip.command("get-notes")
+@click.argument("track_index", type=int)
+@click.argument("clip_index", type=int)
+@click.pass_context
+def clip_get_notes(ctx: click.Context, track_index: int, clip_index: int) -> None:
+    """Get MIDI notes from a clip at TRACK_INDEX / CLIP_INDEX."""
+    conn = _get_conn(ctx)
+    result = conn.send_command("get_clip_notes", {"track_index": track_index, "clip_index": clip_index})
+    _pp(result)
+
+
+@clip.command("duplicate")
+@click.argument("track_index", type=int)
+@click.argument("clip_index", type=int)
+@click.argument("dest_slot", type=int)
+@click.pass_context
+def clip_duplicate(ctx: click.Context, track_index: int, clip_index: int, dest_slot: int) -> None:
+    """Duplicate a clip to DEST_SLOT on the same track."""
+    conn = _get_conn(ctx)
+    conn.send_command("duplicate_clip", {
+        "track_index": track_index,
+        "clip_index": clip_index,
+        "dest_clip_index": dest_slot,
+    })
+    click.echo(f"Duplicated clip from slot {clip_index} to slot {dest_slot} on track {track_index}")
 
 
 @clip.command("fire")
@@ -388,6 +477,26 @@ def arrangement() -> None:
     pass
 
 
+@arrangement.command("clear")
+@click.pass_context
+def arrangement_clear(ctx: click.Context) -> None:
+    """Delete all clips from the Arrangement View."""
+    conn = _get_conn(ctx)
+    result = conn.send_command("clear_arrangement")
+    n = result.get("deleted", 0)
+    click.echo(f"Arrangement cleared: {n} clip(s) deleted.")
+
+
+@arrangement.command("play-from")
+@click.argument("beat", type=float)
+@click.pass_context
+def arrangement_play_from(ctx: click.Context, beat: float) -> None:
+    """Start Arrangement playback from BEAT position (in beats, 0-based)."""
+    conn = _get_conn(ctx)
+    conn.send_command("play_from_beat", {"beat": beat})
+    click.echo(f"Playback started from beat {beat}")
+
+
 @arrangement.command("build")
 @click.pass_context
 def arrangement_build(ctx: click.Context) -> None:
@@ -419,6 +528,59 @@ def arrangement_build(ctx: click.Context) -> None:
     n = result.get("sections_built", 0)
     click.echo(f"Arrangement built: {n} sections placed.")
     click.echo("Switch to Arrangement View in Ableton and press Play.")
+
+
+# ── Device commands ─────────────────────────────────────────────────
+
+@cli.group()
+def device() -> None:
+    """Device parameter operations."""
+    pass
+
+
+@device.command("param")
+@click.argument("track_index", type=int)
+@click.argument("device_index", type=int)
+@click.argument("param_name")
+@click.argument("value", type=float)
+@click.pass_context
+def device_param(ctx: click.Context, track_index: int, device_index: int, param_name: str, value: float) -> None:
+    """Set a device parameter.
+
+    DEVICE_INDEX: 0-based device position on the track (see 'ableton track info').
+    PARAM_NAME: Parameter name, case-insensitive (e.g. 'Filter Freq').
+    VALUE: New value (range depends on parameter).
+
+    Example: ableton device param 0 0 "Filter Freq" 800
+    """
+    conn = _get_conn(ctx)
+    result = conn.send_command("set_device_param", {
+        "track_index": track_index,
+        "device_index": device_index,
+        "param_name": param_name,
+        "value": value,
+    })
+    actual_name = result.get("param_name", param_name)
+    actual_value = result.get("value", value)
+    click.echo(f"Set '{actual_name}' to {actual_value:.3f} on track {track_index}, device {device_index}")
+
+
+# ── Scene commands ───────────────────────────────────────────────────
+
+@cli.group()
+def scene() -> None:
+    """Scene operations."""
+    pass
+
+
+@scene.command("fire")
+@click.argument("index", type=int)
+@click.pass_context
+def scene_fire(ctx: click.Context, index: int) -> None:
+    """Fire (trigger) a Session View scene by INDEX."""
+    conn = _get_conn(ctx)
+    conn.send_command("fire_scene", {"scene_index": index})
+    click.echo(f"Scene {index} fired")
 
 
 # ── Entry point ─────────────────────────────────────────────────────
